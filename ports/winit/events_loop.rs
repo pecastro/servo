@@ -24,28 +24,41 @@ enum EventLoop {
     Headless(Arc<(Mutex<bool>, Condvar)>),
 }
 
-pub struct EventsLoop(EventLoop);
+pub struct EventsLoop {
+    init_win: bool,
+    ev: EventLoop
+}
 
 impl EventsLoop {
     // Ideally, we could use the winit event loop in both modes,
     // but on Linux, the event loop requires a X11 server.
     #[cfg(not(target_os = "linux"))]
-    pub fn new(_headless: bool) -> EventsLoop {
-        EventsLoop(EventLoop::Winit(Some(winit::event_loop::EventLoop::with_user_event())))
+    pub fn new(headless: bool) -> EventsLoop {
+        EventsLoop {
+            init_win: false,
+            ev: EventLoop::Winit(Some(winit::event_loop::EventLoop::with_user_event()))
+        }
+
     }
     #[cfg(target_os = "linux")]
     pub fn new(headless: bool) -> EventsLoop {
-        EventsLoop(if headless {
-            EventLoop::Headless(Arc::new((Mutex::new(false), Condvar::new())))
+        if headless {
+            EventsLoop {
+                init_win: false,
+                ev: EventLoop::Headless(Arc::new((Mutex::new(false), Condvar::new())))
+            }
         } else {
-            EventLoop::Winit(Some(winit::event_loop::EventLoop::with_user_event()))
-        })
+            EventsLoop {
+                init_win: false,
+                ev: EventLoop::Winit(Some(winit::event_loop::EventLoop::with_user_event()))
+            }
+        }
     }
 }
 
 impl EventsLoop {
     pub fn create_event_loop_waker(&self) -> Box<dyn EventLoopWaker> {
-        match self.0 {
+        match self.ev {
             EventLoop::Winit(ref events_loop) => {
                 let events_loop = events_loop
                     .as_ref()
@@ -56,7 +69,7 @@ impl EventsLoop {
         }
     }
     pub fn as_winit(&self) -> &winit::event_loop::EventLoop<ServoEvent> {
-        match self.0 {
+        match self.ev {
             EventLoop::Winit(Some(ref event_loop)) => event_loop,
             EventLoop::Winit(None) | EventLoop::Headless(..) => {
                 panic!("Can't access winit event loop while using the fake headless event loop")
@@ -64,13 +77,13 @@ impl EventsLoop {
         }
     }
 
-    pub fn run_forever<F: 'static>(self, mut callback: F)
+    pub fn run_forever<F: 'static>(mut self, mut callback: F)
     where F: FnMut(
         winit::event::Event<ServoEvent>,
         Option<&winit::event_loop::EventLoopWindowTarget<ServoEvent>>,
         &mut winit::event_loop::ControlFlow
     ) {
-        match self.0 {
+        match self.ev {
             EventLoop::Winit(events_loop) => {
                 let events_loop = events_loop
                     .expect("Can't run an unavailable event loop.");
@@ -89,9 +102,21 @@ impl EventsLoop {
                         None,
                         &mut control_flow
                     );
+
+                    if ! self.init_win {
+                        self.init_win = true;
+                        callback(
+                            winit::event::Event::NewEvents(winit::event::StartCause::Init),
+                            None,
+                            &mut control_flow
+                        );
+                    }
+
                     if control_flow != winit::event_loop::ControlFlow::Poll {
                         *flag.lock().unwrap() = false;
-                    } else if control_flow == winit::event_loop::ControlFlow::Exit {
+                    }
+
+                    if control_flow == winit::event_loop::ControlFlow::Exit {
                         break;
                     }
                 }
